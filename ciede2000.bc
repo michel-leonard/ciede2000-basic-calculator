@@ -1,0 +1,87 @@
+/* This function written in bc is not affiliated with the CIE (International Commission on Illumination),
+and is released into the public domain. It is provided "as is" without any warranty, express or implied. */
+
+m_pi = 0.0
+
+/* The classic CIE ΔE2000 implementation, which operates on two L*a*b* colors, and returns their difference.
+"l" ranges from 0 to 100, while "a" and "b" are unbounded and commonly clamped to the range of -128 to 127. */
+define ciede2000(l1, a1, b1, l2, a2, b2, kl, kc, kh, canonical) {
+	/* Working in Basic Calculator with the CIEDE2000 color-difference formula.
+	kl, kc, kh are parametric factors to be adjusted according to
+	different viewing parameters such as textures, backgrounds... */
+	if (m_pi == 0.0) {
+		/* Computing pi ... 3.1415926535897932384626433832795 ...
+		with arbitrary precision using Machin’s formula proposed in 1706. */
+		m_pi =  16.0 * a(0.2) - 4.0 * a(1.0 / 239.0)
+	}
+	n = (sqrt(a1 * a1 + b1 * b1) + sqrt(a2 * a2 + b2 * b2)) * 0.5
+	n = n * n * n * n * n * n * n
+	/* A factor involving chroma raised to the power of 7 designed to make
+	the influence of chroma on the total color difference more accurate. */
+	n = 1.0 + 0.5 * (1.0 - sqrt(n / (n + 6103515625.0)))
+	/* Application of the chroma correction factor. */
+	c1 = sqrt(a1 * a1 * n * n + b1 * b1)
+	c2 = sqrt(a2 * a2 * n * n + b2 * b2)
+	/* Using 14 lines to simulate atan2, as bc does not have this built-in. */
+	if (0.0 < a1) {
+		h1 = a(b1 / (a1 * n)) + (b1 < 0.0) * 2.0 * m_pi
+	} else if (a1 < 0.0) {
+		h1 = a(b1 / (a1 * n)) + m_pi
+	} else {
+		h1 = m_pi + ((b1 < 0.0) - (0.0 < b1)) * 0.5 * m_pi
+	}
+	if (0.0 < a2) {
+		h2 = a(b2 / (a2 * n)) + (b2 < 0.0) * 2.0 * m_pi
+	} else if (a2 < 0.0) {
+		h2 = a(b2 / (a2 * n)) + m_pi
+	} else {
+		h2 = m_pi + ((b2 < 0.0) - (0.0 < b2)) * 0.5 * m_pi
+	}
+	/* The atan2 polyfill (customized) is complete. */
+	if (h2 < h1) { n = h1 - h2; } else { n = h2 - h1; }
+	/* When the hue angles lie in different quadrants, the straightforward
+	average can produce a mean that incorrectly suggests a hue angle in
+	the wrong quadrant, the next lines handle this issue. */
+	h_mean = (h1 + h2) * 0.5
+	h_delta = (h2 - h1) * 0.5
+	/* The part where most programmers get it wrong. */
+	if (m_pi + 0.00000000000001 < n) {
+		h_delta = h_delta + m_pi
+		if (canonical != 0.0 && m_pi + 0.00000000000001 < h_mean) {
+			/* Sharma’s implementation, OpenJDK, ... */
+			h_mean = h_mean - m_pi
+		} else {
+			/* Lindbloom’s implementation, Netflix’s VMAF, ... */
+			h_mean = h_mean + m_pi
+		}
+	}
+	p = 36.0 * h_mean - 55.0 * m_pi
+	n = (c1 + c2) * 0.5
+	n = n * n * n * n * n * n * n
+	/* The hue rotation correction term is designed to account for the
+	non-linear behavior of hue differences in the blue region. */
+	r_t = -2.0 * sqrt(n / (n + 6103515625.0)) \
+			* s(m_pi / 3.0 * e(p * p / (-25.0 * m_pi * m_pi)))
+	n = (l1 + l2) * 0.5
+	n = (n - 50.0) * (n - 50.0)
+	/* Lightness. */
+	l = (l2 - l1) / (kl * (1.0 + 0.015 * n / sqrt(20.0 + n)))
+	/* These coefficients adjust the impact of different harmonic
+	components on the hue difference calculation. */
+	t = 1.0 - 0.17 * s(h_mean + m_pi / 3.0) \
+			+ 0.24 * s(2.0 * h_mean + m_pi / 2.0) \
+			+ 0.32 * s(3.0 * h_mean + 8.0 * m_pi / 15.0) \
+			- 0.20 * s(4.0 * h_mean + 3.0 * m_pi / 20.0)
+	n = c1 + c2
+	/* Hue. */
+	h = 2.0 * sqrt(c1 * c2) * s(h_delta) / (kh * (1.0 + 0.0075 * n * t))
+	/* Chroma. */
+	c = (c2 - c1) / (kc * (1.0 + 0.0225 * n))
+	/*  The result reflects the actual geometric distance in color space. */
+	return sqrt(l * l + h * h + c * c + c * h * r_t)
+}
+
+/*
+	If you remove the constant 0.00000000000001, the code will continue to work, but
+	CIEDE2000 interoperability between all programming languages will no longer be guaranteed.
+*/
