@@ -1,0 +1,62 @@
+name: CIEDE2000 Test in BC (Arbitrary Precision)
+
+on:
+  workflow_dispatch:
+
+env:
+  n_csv_lines: 100000
+  precision: 50
+
+jobs:
+  test-ciede2000-bc-arbitrary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: 📂 Checkout repository
+        uses: actions/checkout@v7
+
+      - name: 📦 Set up GCC, MPFR, GMP and Gavin Howard's BC
+        run: |
+          command -v gcc > /dev/null || { sudo apt-get update --allow-unauthenticated && sudo apt-get install --allow-unauthenticated --no-install-recommends --assume-yes gcc ; }
+          sudo apt-get update --allow-unauthenticated && sudo apt-get install --allow-unauthenticated --no-install-recommends --assume-yes libmpfr-dev libgmp-dev
+          
+          BC_URL="https://github.com/gavinhoward/bc/archive/94dec4dd96adc02abff4f5cf351f0204f05dbb40.tar.gz"
+          cd $(mktemp --directory)
+          wget --no-verbose --no-check-certificate --timeout=5 --tries=2 "$BC_URL" -O- | tar -xz --strip-components=1
+          sudo ./configure.sh -O3 && sudo make && sudo make install
+          sudo rm -rf "$PWD"
+
+      - name: 🌐️ Download the CIEDE2000 driver program
+        run: wget --no-verbose --no-check-certificate --timeout=5 --tries=2 https://ciede2000.pages-perso.free.fr/static/github/ciede2000-arbitrary-precision-driver.c
+
+      - name: ⚙️ Compile the CIEDE2000 driver program in C99
+        run: gcc --version && gcc -std=c99 -Wall -pedantic -O2 -g ciede2000-arbitrary-precision-driver.c -o ciede2000-arbitrary -lmpfr -lgmp
+
+      - name: 🎨 Generate ΔE2000 color difference test cases
+        run: ./ciede2000-arbitrary --number ${{ env.n_csv_lines }} --with-weights --output-file test-cases.csv
+
+      - name: 🚀 Run test cases in BC and stream to verifier
+        run: |
+          chmod 0700 ciede2000.sh
+          ./ciede2000.sh --canonical --precision ${{ env.precision }} < test-cases.csv | ./ciede2000-arbitrary --precision ${{ env.precision }} --output-file summary-canonical.txt
+          ./ciede2000.sh --precision ${{ env.precision }} < test-cases.csv | ./ciede2000-arbitrary --precision ${{ env.precision }} --output-file summary-simplified.txt
+
+      - name: 🏁 Conclusion
+        run: |
+          for compliance in simplified canonical; do
+            file="summary-$compliance.txt"
+            cat "$file"
+            #
+            if [ "${file%canonical.txt}" = "$file" ]; then
+              Q1="[ ] CANONICAL [X] SIMPLIFIED"
+            else
+              Q1="[X] CANONICAL [ ] SIMPLIFIED"
+            fi
+            if grep -Fq "$Q1" "$file" && grep -Fq "Error : 0" "$file" && grep -Fq "Successes : ${{ env.n_csv_lines }}" "$file"; then
+              echo "✔️ Verification of $file successful: all ${{ env.n_csv_lines }} color differences were correctly calculated."
+            else
+              echo "❌ Verification failed. See above for details."
+              exit 1
+            fi
+          done

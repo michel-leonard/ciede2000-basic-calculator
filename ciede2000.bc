@@ -1,0 +1,168 @@
+/* This function written in bc is not affiliated with the CIE (International Commission on Illumination),
+and is released into the public domain. It is provided "as is" without any warranty, express or implied. */
+
+m_pi = 0
+m_pi_scale = 0
+
+/* The classic CIE ΔE2000 implementation, which operates on two L*a*b* colors, and returns their difference.
+"l" ranges from 0 to 100, while "a" and "b" are unbounded and commonly clamped to the range of -128 to 127. */
+define ciede2000(l1, a1, b1, l2, a2, b2, kl, kc, kh, canonical) {
+	/* Working in Basic Calculator with the CIEDE2000 color-difference formula.
+	kl, kc, kh are parametric factors to be adjusted according to
+	different viewing parameters such as textures, backgrounds... */
+
+	/* Use a "scale" that absorbs all rounding errors. */
+	user_scale = scale
+	if (scale < 20) {
+		scale = 35
+	} else {
+		scale = 7 * scale / 4
+	}
+
+	/* Calculate pi once and for all. */
+	if (m_pi_scale != scale) {
+		/* Computing pi ... 3.1415926535897932384626433832795 ... with 
+		arbitrary precision using Machin’s formula proposed in 1706. */
+		m_pi =  16.0 * a(0.2) - 4.0 * a(1.0 / 239.0)
+		m_pi_scale = scale
+	}
+
+	/* Calculate the chroma correction factor. */
+	c1 = b1 * b1
+	c2 = b2 * b2
+	n = sqrt(a1 * a1 + c1)
+	n = n + sqrt(a2 * a2 + c2)
+	n = n * 0.5
+	n = n ^ 7
+	n = n / (n + 6103515625.0)
+	n = sqrt(n)
+	n = 1.0 - n
+	n = n * 0.5
+	n = n + 1.0
+
+	/* Simulate atan2, as bc does not have this built-in. */
+	c = a1 * n
+	c1 = c * c + c1
+	c1 = sqrt(c1)
+	if (0.0 < a1) {
+		h1 = a(b1 / c) + (b1 < 0.0) * 2.0 * m_pi
+	} else if (a1 < 0.0) {
+		h1 = a(b1 / c) + m_pi
+	} else {
+		h1 = m_pi + ((b1 < 0.0) - (0.0 < b1)) * 0.5 * m_pi
+	}
+	c = a2 * n
+	c2 = c * c + c2
+	c2 = sqrt(c2)
+	if (0.0 < a2) {
+		h2 = a(b2 / c) + (b2 < 0.0) * 2.0 * m_pi
+	} else if (a2 < 0.0) {
+		h2 = a(b2 / c) + m_pi
+	} else {
+		h2 = m_pi + ((b2 < 0.0) - (0.0 < b2)) * 0.5 * m_pi
+	}
+	/* The atan2 polyfill (customized) is complete. */
+
+	/* When the hue angles lie in different quadrants, the straightforward
+	average can produce a mean that incorrectly suggests a hue angle in
+	the wrong quadrant, the next lines handle this issue. */
+	h_delta = h2 - h1
+	h_delta = h_delta * 0.5
+	h_mean = h_delta + h1
+
+	/* The part where most programmers get it wrong. */
+	if (h2 < h1) { n = h1 - h2; } else { n = h2 - h1; }
+	if (m_pi + 0.00000000000001 < n) {
+		h_delta = h_delta + m_pi
+		if (canonical != 0.0 && m_pi + 0.00000000000001 < h_mean) {
+			/* Sharma’s implementation, OpenJDK, ... */
+			h_mean = h_mean - m_pi
+		} else {
+			/* Lindbloom’s implementation, Netflix’s VMAF, ... */
+			h_mean = h_mean + m_pi
+		}
+	}
+
+	/* The hue rotation correction term is designed to account for
+	the non-linear behavior of hue differences in the blue region. */
+	n = c1 + c2
+	n = n * 0.5
+	n = n ^ 7
+	n = n / (n + 6103515625.0)
+	n = sqrt(n)
+	r_t = n * -2.0
+	n = h_mean * 36.0
+	n = n - 55.0 * m_pi
+	n = n / (5.0 * m_pi)
+	n = n * n
+	n = e(-n)
+	n = n * m_pi
+	n = n / 3.0
+	n = s(n)
+	r_t = r_t * n
+
+	/* Lightness. */
+	l = l2 - l1
+	n = l1 + l2
+	n = n * 0.5
+	n = n - 50.0
+	n = n * n
+	n = n / sqrt(20.0 + n)
+	n = n * 0.015
+	n = 1.0 + n
+	n = n * kl
+	l = l / n
+
+	/* These coefficients adjust the impact of different
+	harmonic components on the hue difference calculation. */
+	t = 1.0
+	t = t - 0.17 * s(h_mean + m_pi / 3.0)
+	t = t + 0.24 * s(2.0 * h_mean + m_pi * 0.5)
+	t = t + 0.32 * s(3.0 * h_mean + 8.0 * m_pi / 15.0)
+	t = t - 0.20 * s(4.0 * h_mean + 3.0 * m_pi / 20.0)
+	n = c1 + c2
+	t = t * n
+	t = t * 0.0075
+	t = t + 1.0
+
+	/* Hue. */
+	h = c1 * c2
+	h = sqrt(h)
+	h = h * s(h_delta)
+	h = 2.0 * h
+	t = t * kh
+	h = h / t
+
+	/* Chroma. */
+	c = c2 - c1
+	n = n * 0.0225
+	n = n + 1.0
+	n = n * kc
+	c = c / n
+
+	/* Combine lightness, chroma, and hue terms. */
+	delta_e = l * l
+	delta_e = delta_e + h * h
+	delta_e = delta_e + c * c
+	h = h * r_t
+	delta_e = delta_e + c * h
+	delta_e = sqrt(delta_e)
+
+	/* Perform the rounding to display "scale" correct decimal digits. */
+	res = delta_e + 5.0 / 10.0 ^ (user_scale + 2)
+	scale = user_scale + 1
+	res = res * 10.0
+	res = res / 10.0
+	scale = user_scale
+
+	/*  The result reflects the actual geometric distance in the color space. */
+	return(res)
+}
+
+/*
+	If you remove the constant 0.00000000000001, the code will continue to work, but
+	CIEDE2000 interoperability between all programming languages will no longer be guaranteed.
+
+	Source code tested by Michel LEONARD
+	Website: ciede2000.pages-perso.free.fr
+*/
